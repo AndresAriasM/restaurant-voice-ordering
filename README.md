@@ -7,6 +7,8 @@ Sistema completo de pedidos de comida mediante voz que utiliza la API Realtime d
 ![Next.js](https://img.shields.io/badge/next.js-14-black.svg)
 ![OpenAI](https://img.shields.io/badge/OpenAI-Realtime_API-green.svg)
 
+![alt text](image.png)
+
 ## 🎯 Características
 
 - **Pedidos por Voz**: Los clientes hablan naturalmente con un asistente de IA
