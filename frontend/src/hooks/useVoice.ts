@@ -10,7 +10,7 @@ export function useVoice() {
   const [transcript, setTranscript] = useState<string[]>([]);
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const dcRef = useRef<RTCDataChannel | null>(null);
-  const { sessionId, setSessionId, setItems, setFocusedProduct } = useCartStore();
+  const { sessionId, setSessionId, setItems, setFocusedProduct, setCustomer, setShowCheckout } = useCartStore();
 
   const connect = async () => {
     try {
@@ -84,17 +84,20 @@ export function useVoice() {
           const args = JSON.parse(event.arguments);
           console.log('🔧 Function call:', event.name, args);
           
+          // Asegurarse de que SIEMPRE tenga session_id
+          const finalArgs = { ...args, session_id: data.session_id };
+          
           // Enfocar producto si se menciona
-          if (args.product_id) {
-            console.log('🎯 Enfocando producto:', args.product_id);
-            setFocusedProduct(args.product_id);
+          if (finalArgs.product_id) {
+            console.log('🎯 Enfocando producto:', finalArgs.product_id);
+            setFocusedProduct(finalArgs.product_id);
           }
           
           // Ejecutar función en backend
           try {
             const result = await axios.post(`${API_URL}/openai/function-call`, {
               name: event.name,
-              arguments: { ...args, session_id: data.session_id }
+              arguments: finalArgs
             });
             
             console.log('✅ Function result:', result.data);
@@ -105,26 +108,93 @@ export function useVoice() {
               setItems(result.data.items);
             }
 
-            // Enviar resultado de vuelta a OpenAI
-            dc.send(JSON.stringify({
-              type: 'conversation.item.create',
-              item: {
-                type: 'function_call_output',
-                call_id: event.call_id,
-                output: JSON.stringify(result.data)
+            // Actualizar datos del cliente si se guardaron
+            if (result.data.customer) {
+              console.log('👤 Actualizando datos del cliente:', result.data.customer);
+              setCustomer(result.data.customer);
+            }
+
+            // Abrir checkout si la función indica que está listo
+            if (event.name === 'ready_for_checkout') {
+              if (result.data.ready && result.data.success && result.data.open_checkout) {
+                console.log('💳 Abriendo checkout...');
+                setShowCheckout(true);
+              } else {
+                console.warn('⚠️ No se puede abrir checkout:', result.data.message || result.data.error);
+                // El asistente debería manejar esto verbalmente
               }
-            }));
-            
-            // IMPORTANTE: Forzar que genere una respuesta
-            dc.send(JSON.stringify({
-              type: 'response.create'
-            }));
-            
-            console.log('🎤 Forzando respuesta del asistente...');
+            }
+
+            // Si cualquier función retorna open_checkout=true, abrir el modal
+            if (result.data.open_checkout === true) {
+              console.log('💳 Flag open_checkout detectado, abriendo modal...');
+              setShowCheckout(true);
+            }
+
+            // Log para debugging
+            if (event.name === 'ready_for_checkout' || event.name === 'reopen_checkout') {
+              console.log('🔍 Checkout function called:', {
+                function: event.name,
+                success: result.data.success,
+                ready: result.data.ready,
+                open_checkout: result.data.open_checkout,
+                should_open: result.data.open_checkout === true
+              });
+            }
+
+            // Mostrar errores en consola para debugging
+            if (result.data.error) {
+              console.error('❌ Error en función:', result.data.error);
+            }
+
+            // Enviar resultado de vuelta a OpenAI
+            if (dc.readyState === 'open') {
+              dc.send(JSON.stringify({
+                type: 'conversation.item.create',
+                item: {
+                  type: 'function_call_output',
+                  call_id: event.call_id,
+                  output: JSON.stringify(result.data)
+                }
+              }));
+              
+              // IMPORTANTE: Forzar que genere una respuesta
+              dc.send(JSON.stringify({
+                type: 'response.create'
+              }));
+              
+              console.log('🎤 Forzando respuesta del asistente...');
+            } else {
+              console.warn('⚠️ Data channel no está abierto, estado:', dc.readyState);
+            }
           } catch (error) {
             console.error('❌ Error ejecutando función:', error);
+            
+            // Enviar error a OpenAI si el canal está abierto
+            if (dc.readyState === 'open') {
+              dc.send(JSON.stringify({
+                type: 'conversation.item.create',
+                item: {
+                  type: 'function_call_output',
+                  call_id: event.call_id,
+                  output: JSON.stringify({ error: 'Error ejecutando función' })
+                }
+              }));
+              
+              dc.send(JSON.stringify({
+                type: 'response.create'
+              }));
+            }
           }
         }
+      };
+
+      dc.onerror = (error) => {
+        console.error('❌ Data channel error:', error);
+      };
+
+      dc.onclose = () => {
+        console.log('🔌 Data channel cerrado');
       };
 
       // Crear oferta WebRTC
@@ -160,12 +230,15 @@ export function useVoice() {
   };
 
   const disconnect = () => {
+    if (dcRef.current) {
+      dcRef.current.close();
+    }
     if (pcRef.current) {
       pcRef.current.close();
-      setIsConnected(false);
-      setIsListening(false);
-      console.log('🔌 Desconectado');
     }
+    setIsConnected(false);
+    setIsListening(false);
+    console.log('🔌 Desconectado');
   };
 
   return { isConnected, isListening, transcript, connect, disconnect };
